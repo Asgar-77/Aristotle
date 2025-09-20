@@ -58,7 +58,7 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
   const [currentStep, setCurrentStep] = useState(0);
   const [showFeedback, setShowFeedback] = useState(true);
   const [showHints, setShowHints] = useState(true);
-  const [strokeColor, setStrokeColor] = useState('#1DA1F2'); // Electric blue
+  const [strokeColor, setStrokeColor] = useState('#FFD700'); // Yellow
   const [strokeWidth, setStrokeWidth] = useState(3);
   const [hoveredStep, setHoveredStep] = useState<number | null>(null);
   const [validatingStep, setValidatingStep] = useState<number | null>(null);
@@ -77,6 +77,9 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
+  const [currentInputType, setCurrentInputType] = useState<'mouse' | 'touch' | 'pen' | null>(null);
+  const [showInputTypeModal, setShowInputTypeModal] = useState(false);
+  const [selectedInputType, setSelectedInputType] = useState<'mouse' | 'touch' | 'pen' | null>(null);
 
   // NEW: Real-time canvas state (document's approach)
   const [stepStrokes, setStepStrokes] = useState<{ [stepId: number]: RealTimeStroke[] }>({});
@@ -201,7 +204,36 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
     for (let i = 0; i < points.length - 1; i++) {
       const current = points[i];
       const next = points[i + 1];
-      const pressure = calculatePressure(current, next);
+      
+      // Use pressure from pen input if available, otherwise calculate from velocity
+      let pressure = 0.5;
+      if (current.pressure !== undefined) {
+        pressure = current.pressure;
+      } else {
+        pressure = calculatePressure(current, next);
+      }
+      
+      // Enhanced pressure adjustment based on input type
+      if (current.pointerType === 'pen') {
+        // Pen: Full pressure range with better sensitivity
+        pressure = Math.max(0.2, Math.min(1.2, pressure));
+      } else if (current.pointerType === 'touch') {
+        // Touch: Moderate pressure range
+        pressure = Math.max(0.4, Math.min(0.9, pressure));
+      } else {
+        // Mouse: Consistent pressure
+        pressure = Math.max(0.5, Math.min(0.7, pressure));
+      }
+      
+      // Apply selected input type preference if available
+      if (selectedInputType === 'pen' && current.pointerType !== 'pen') {
+        // User prefers pen but using other input - boost pressure slightly
+        pressure = Math.min(1.0, pressure * 1.1);
+      } else if (selectedInputType === 'touch' && current.pointerType === 'mouse') {
+        // User prefers touch but using mouse - adjust pressure
+        pressure = Math.min(0.8, pressure * 1.05);
+      }
+      
       const width = baseWidth * pressure;
 
       ctx.lineWidth = width;
@@ -286,10 +318,111 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
     }
   }, [stepStrokes, currentStrokes, strokeColor, strokeWidth, drawSmoothStroke]);
 
-  // Drawing event handlers (exactly like document)
+  // Input type selection handlers
+  const handleInputTypeSelect = useCallback((inputType: 'mouse' | 'touch' | 'pen') => {
+    setSelectedInputType(inputType);
+    setShowInputTypeModal(false);
+    
+    // Store preference in localStorage
+    localStorage.setItem('preferredInputType', inputType);
+    
+    // Show confirmation message
+    setAutoSaveStatus('saved');
+    setTimeout(() => {
+      setAutoSaveStatus('saved');
+    }, 2000);
+  }, []);
+
+  const handleSkipInputType = useCallback(() => {
+    setShowInputTypeModal(false);
+    // Auto-detect based on device capabilities
+    const hasTouch = 'ontouchstart' in window;
+    const hasPointer = 'onpointerdown' in window;
+    
+    if (hasPointer) {
+      setSelectedInputType('touch'); // Default to touch for mobile
+    } else if (hasTouch) {
+      setSelectedInputType('touch');
+    } else {
+      setSelectedInputType('mouse');
+    }
+  }, []);
+
+  // Enhanced drawing event handlers with pen support
+  const handlePointerDown = useCallback((e: React.PointerEvent, stepId: number) => {
+    const canvas = canvasRefs.current[stepId - 1];
+    if (!canvas) return;
+    
+    // If no input type selected, auto-detect and set it
+    if (!selectedInputType) {
+      const inputType = e.pointerType as 'mouse' | 'touch' | 'pen' || 'mouse';
+      setSelectedInputType(inputType);
+    }
+
+    // Prevent default to avoid scrolling and other browser behaviors
+    e.preventDefault();
+    
+    setIsDrawing(prev => ({ ...prev, [stepId]: true }));
+    
+    // Get coordinates with proper scaling
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    
+    // Enhanced pressure detection for different input types
+    let pressure = 0.5;
+    if (e.pointerType === 'pen') {
+      // Pen input: use actual pressure, fallback to 0.7 for better visibility
+      pressure = e.pressure > 0 ? e.pressure : 0.7;
+    } else if (e.pointerType === 'touch') {
+      // Touch input: use pressure if available, otherwise 0.6
+      pressure = e.pressure > 0 ? e.pressure : 0.6;
+    } else {
+      // Mouse input: fixed pressure
+      pressure = 0.5;
+    }
+    
+    const point: TimestampedPoint = {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY,
+      timestamp: Date.now(),
+      pressure: pressure,
+      pointerType: e.pointerType // 'pen', 'touch', 'mouse'
+    };
+    
+    // Set current input type for visual feedback
+    setCurrentInputType(e.pointerType as 'mouse' | 'touch' | 'pen');
+    
+    setCurrentStrokes(prev => ({ ...prev, [stepId]: [point] }));
+
+    // Initialize session if needed
+    if (!sessionIds[stepId]) {
+      setSessionIds(prev => ({ ...prev, [stepId]: `session-${stepId}-${Date.now()}` }));
+    }
+
+    // Mark as drawing mode
+    setInputMode(prev => ({
+      ...prev,
+      [stepId]: 'drawing'
+    }));
+
+    // Clear validation results when drawing on a wrong step (reset for retry)
+    setSteps(prev => prev.map((s, index) =>
+      index === stepId - 1 && (s.status === 'incorrect' || s.isChecked)
+        ? { ...s, status: 'current', isChecked: false, validationResult: undefined }
+        : s
+    ));
+  }, [sessionIds]);
+
+  // Fallback mouse handler for older browsers
   const handleMouseDown = useCallback((e: React.MouseEvent, stepId: number) => {
     const canvas = canvasRefs.current[stepId - 1];
     if (!canvas) return;
+    
+    // If no input type selected, set to mouse
+    if (!selectedInputType) {
+      setSelectedInputType('mouse');
+    }
 
     setIsDrawing(prev => ({ ...prev, [stepId]: true }));
     const point = getCanvasCoordinates(e.nativeEvent, canvas);
@@ -314,6 +447,51 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
     ));
   }, [getCanvasCoordinates, sessionIds]);
 
+  const handlePointerMove = useCallback((e: React.PointerEvent, stepId: number) => {
+    if (!isDrawing[stepId]) return;
+
+    const canvas = canvasRefs.current[stepId - 1];
+    if (!canvas) return;
+
+    // Prevent default to avoid scrolling
+    e.preventDefault();
+
+    // Get coordinates with proper scaling
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    
+    // Enhanced pressure detection for different input types
+    let pressure = 0.5;
+    if (e.pointerType === 'pen') {
+      // Pen input: use actual pressure, fallback to 0.7 for better visibility
+      pressure = e.pressure > 0 ? e.pressure : 0.7;
+    } else if (e.pointerType === 'touch') {
+      // Touch input: use pressure if available, otherwise 0.6
+      pressure = e.pressure > 0 ? e.pressure : 0.6;
+    } else {
+      // Mouse input: fixed pressure
+      pressure = 0.5;
+    }
+    
+    const point: TimestampedPoint = {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY,
+      timestamp: Date.now(),
+      pressure: pressure,
+      pointerType: e.pointerType
+    };
+    
+    setCurrentStrokes(prev => ({
+      ...prev,
+      [stepId]: [...(prev[stepId] || []), point]
+    }));
+
+    // Redraw immediately for real-time feedback
+    redrawCanvas(stepId);
+  }, [isDrawing, redrawCanvas]);
+
+  // Fallback mouse move handler
   const handleMouseMove = useCallback((e: React.MouseEvent, stepId: number) => {
     if (!isDrawing[stepId]) return;
 
@@ -330,6 +508,33 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
     redrawCanvas(stepId);
   }, [isDrawing, getCanvasCoordinates, redrawCanvas]);
 
+  const handlePointerUp = useCallback((e: React.PointerEvent, stepId: number) => {
+    if (!isDrawing[stepId]) return;
+
+    // Prevent default to avoid scrolling
+    e.preventDefault();
+
+    const currentStroke = currentStrokes[stepId] || [];
+    if (currentStroke.length > 1) {
+      const newStroke: RealTimeStroke = {
+        points: currentStroke,
+        id: `stroke-${stepId}-${Date.now()}`
+      };
+
+      const updatedStrokes = [...(stepStrokes[stepId] || []), newStroke];
+      setStepStrokes(prev => ({ ...prev, [stepId]: updatedStrokes }));
+
+      // Trigger real-time recognition with debouncing (like document)
+      debouncedRecognition(stepId, updatedStrokes);
+    }
+
+    setIsDrawing(prev => ({ ...prev, [stepId]: false }));
+    setCurrentStrokes(prev => ({ ...prev, [stepId]: [] }));
+    setCurrentInputType(null);
+    redrawCanvas(stepId);
+  }, [isDrawing, currentStrokes, stepStrokes, debouncedRecognition, redrawCanvas]);
+
+  // Fallback mouse up handler
   const handleMouseUp = useCallback((stepId: number) => {
     if (!isDrawing[stepId]) return;
 
@@ -383,16 +588,111 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
     }
   }, [problemStrokes, problemCurrentStrokes, strokeColor, strokeWidth, drawSmoothStroke]);
 
-  // Problem canvas drawing handlers
+  // Enhanced problem canvas drawing handlers with pen support
+  const handleProblemPointerDown = useCallback((e: React.PointerEvent) => {
+    const canvas = problemCanvasRef.current;
+    if (!canvas) return;
+    
+    // If no input type selected, auto-detect and set it
+    if (!selectedInputType) {
+      const inputType = e.pointerType as 'mouse' | 'touch' | 'pen' || 'mouse';
+      setSelectedInputType(inputType);
+    }
+
+    // Prevent default to avoid scrolling
+    e.preventDefault();
+    
+    setIsDrawingProblem(true);
+    
+    // Get coordinates with proper scaling
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    
+    // Enhanced pressure detection for different input types
+    let pressure = 0.5;
+    if (e.pointerType === 'pen') {
+      // Pen input: use actual pressure, fallback to 0.7 for better visibility
+      pressure = e.pressure > 0 ? e.pressure : 0.7;
+    } else if (e.pointerType === 'touch') {
+      // Touch input: use pressure if available, otherwise 0.6
+      pressure = e.pressure > 0 ? e.pressure : 0.6;
+    } else {
+      // Mouse input: fixed pressure
+      pressure = 0.5;
+    }
+    
+    const point: TimestampedPoint = {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY,
+      timestamp: Date.now(),
+      pressure: pressure,
+      pointerType: e.pointerType
+    };
+    
+    // Set current input type for visual feedback
+    setCurrentInputType(e.pointerType as 'mouse' | 'touch' | 'pen');
+    
+    setProblemCurrentStrokes([point]);
+  }, []);
+
+  // Fallback problem mouse handler
   const handleProblemMouseDown = useCallback((e: React.MouseEvent) => {
     const canvas = problemCanvasRef.current;
     if (!canvas) return;
+    
+    // If no input type selected, set to mouse
+    if (!selectedInputType) {
+      setSelectedInputType('mouse');
+    }
 
     setIsDrawingProblem(true);
     const point = getCanvasCoordinates(e.nativeEvent, canvas);
     setProblemCurrentStrokes([point]);
   }, [getCanvasCoordinates]);
 
+  const handleProblemPointerMove = useCallback((e: React.PointerEvent) => {
+    if (!isDrawingProblem) return;
+
+    const canvas = problemCanvasRef.current;
+    if (!canvas) return;
+
+    // Prevent default to avoid scrolling
+    e.preventDefault();
+
+    // Get coordinates with proper scaling
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    
+    // Enhanced pressure detection for different input types
+    let pressure = 0.5;
+    if (e.pointerType === 'pen') {
+      // Pen input: use actual pressure, fallback to 0.7 for better visibility
+      pressure = e.pressure > 0 ? e.pressure : 0.7;
+    } else if (e.pointerType === 'touch') {
+      // Touch input: use pressure if available, otherwise 0.6
+      pressure = e.pressure > 0 ? e.pressure : 0.6;
+    } else {
+      // Mouse input: fixed pressure
+      pressure = 0.5;
+    }
+    
+    const point: TimestampedPoint = {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY,
+      timestamp: Date.now(),
+      pressure: pressure,
+      pointerType: e.pointerType
+    };
+    
+    setProblemCurrentStrokes(prev => [...prev, point]);
+    
+    // Redraw the entire canvas immediately for real-time feedback
+    redrawProblemCanvas();
+  }, [isDrawingProblem, redrawProblemCanvas]);
+
+  // Fallback problem mouse move handler
   const handleProblemMouseMove = useCallback((e: React.MouseEvent) => {
     if (!isDrawingProblem) return;
 
@@ -406,6 +706,32 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
     redrawProblemCanvas();
   }, [isDrawingProblem, getCanvasCoordinates, redrawProblemCanvas]);
 
+  const handleProblemPointerUp = useCallback((e: React.PointerEvent) => {
+    if (!isDrawingProblem) return;
+
+    // Prevent default to avoid scrolling
+    e.preventDefault();
+
+    if (problemCurrentStrokes.length > 1) {
+      const newStroke: RealTimeStroke = {
+        points: problemCurrentStrokes,
+        id: `problem-stroke-${Date.now()}`
+      };
+
+      const updatedStrokes = [...problemStrokes, newStroke];
+      setProblemStrokes(updatedStrokes);
+
+      // Trigger real-time problem recognition with debouncing
+      debouncedProblemRecognition(updatedStrokes);
+    }
+
+    setIsDrawingProblem(false);
+    setProblemCurrentStrokes([]);
+    setCurrentInputType(null);
+    redrawProblemCanvas();
+  }, [isDrawingProblem, problemCurrentStrokes, problemStrokes, debouncedProblemRecognition, redrawProblemCanvas]);
+
+  // Fallback problem mouse up handler
   const handleProblemMouseUp = useCallback(() => {
     if (!isDrawingProblem) return;
 
@@ -441,6 +767,13 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
       }
     }
   }, [existingNotebook]);
+
+  // Show input type selection when notebook is first opened
+  useEffect(() => {
+    // Always show the modal for now to ensure users can select
+    // This can be changed later to only show for first-time users
+    setShowInputTypeModal(true);
+  }, []); // Run only once when component mounts
 
   // Initialize first step when problem is set
   useEffect(() => {
@@ -963,6 +1296,25 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
             <Trash2 className="w-4 h-4" />
           </button>
 
+          {/* Input Type Indicator & Change Button */}
+          {selectedInputType && (
+            <div className="flex items-center space-x-2 border-l border-gray-600 pl-2">
+              <div className="w-2 h-2 bg-purple-400 rounded-full"></div>
+              <span className="text-xs text-gray-400 hidden sm:inline">
+                {selectedInputType === 'pen' ? '✏️ Pen Mode' : 
+                 selectedInputType === 'touch' ? '👆 Touch Mode' : 
+                 '🖱️ Mouse Mode'}
+              </span>
+              <button
+                onClick={() => setShowInputTypeModal(true)}
+                className="p-1 hover:bg-gray-700 rounded transition-colors"
+                title="Change input method"
+              >
+                <span className="text-xs text-gray-400 hover:text-white">⚙️</span>
+              </button>
+            </div>
+          )}
+
           {/* Auto-save Status */}
           <div className="flex items-center space-x-2 border-l border-gray-600 pl-2">
             <div className={`w-2 h-2 rounded-full ${
@@ -1204,15 +1556,26 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
                         )}
                       <canvas
                         ref={problemCanvasRef}
-                          className="w-full h-32 sm:h-40 md:h-48 cursor-crosshair touch-none rounded-lg sm:rounded-xl border-2 border-purple-500/20 hover:border-purple-400/60 transition-all duration-500 shadow-2xl hover:shadow-purple-500/20 hover:shadow-2xl transform hover:scale-[1.01] backdrop-blur-sm"
+                          className={`w-full h-32 sm:h-40 md:h-48 rounded-lg sm:rounded-xl border-2 border-purple-500/20 hover:border-purple-400/60 transition-all duration-500 shadow-2xl hover:shadow-purple-500/20 hover:shadow-2xl transform hover:scale-[1.01] backdrop-blur-sm ${
+                            selectedInputType === 'pen' ? 'input-pen-mode' :
+                            selectedInputType === 'touch' ? 'input-touch-mode' :
+                            'input-mouse-mode'
+                          }`}
                         style={{
                           background: 'linear-gradient(135deg, rgba(139, 43, 226, 0.05) 0%, rgba(0, 0, 0, 0.8) 100%)',
                           boxShadow: 'inset 0 1px 3px rgba(139, 43, 226, 0.3), 0 4px 20px rgba(0, 0, 0, 0.5)'
                         }}
+                        // Primary pointer events (supports pen, touch, mouse)
+                        onPointerDown={handleProblemPointerDown}
+                        onPointerMove={handleProblemPointerMove}
+                        onPointerUp={handleProblemPointerUp}
+                        onPointerLeave={() => handleProblemPointerUp({ preventDefault: () => {} } as React.PointerEvent)}
+                        // Fallback mouse events for older browsers
                         onMouseDown={handleProblemMouseDown}
                         onMouseMove={handleProblemMouseMove}
                         onMouseUp={handleProblemMouseUp}
                         onMouseLeave={handleProblemMouseUp}
+                        // Enhanced touch events for mobile (fallback)
                         onTouchStart={(e) => {
                           e.preventDefault();
                           const touch = e.touches[0];
@@ -1238,11 +1601,14 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
                       />
                       </div>
                       
-                      {/* Drawing indicator */}
+
+                      {/* Drawing indicator with input type */}
                       {isDrawingProblem && (
                         <div className="absolute top-2 left-2 flex items-center space-x-2 animate-pulse">
                           <div className="w-2 h-2 bg-blue-400 rounded-full animate-ping"></div>
-                          <span className="text-xs text-blue-400 font-medium">Drawing...</span>
+                          <span className="text-xs text-blue-400 font-medium">
+                            Drawing with {currentInputType === 'pen' ? '✏️ Pen' : currentInputType === 'touch' ? '👆 Touch' : '🖱️ Mouse'}...
+                          </span>
                         </div>
                       )}
                       
@@ -1373,11 +1739,35 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
                      )}
                    <canvas
                      ref={el => canvasRefs.current[step.id - 1] = el}
-                     className="w-full h-32 cursor-crosshair touch-none rounded-xl border-2 border-purple-500/20 hover:border-purple-400/60 transition-all duration-500 shadow-2xl hover:shadow-purple-500/20 hover:shadow-2xl transform hover:scale-[1.01] backdrop-blur-sm"
+                     className={`w-full h-32 rounded-xl border-2 border-purple-500/20 hover:border-purple-400/60 transition-all duration-500 shadow-2xl hover:shadow-purple-500/20 hover:shadow-2xl transform hover:scale-[1.01] backdrop-blur-sm ${
+                       selectedInputType === 'pen' ? 'input-pen-mode' :
+                       selectedInputType === 'touch' ? 'input-touch-mode' :
+                       'input-mouse-mode'
+                     }`}
                      style={{
                        background: 'linear-gradient(135deg, rgba(139, 43, 226, 0.05) 0%, rgba(0, 0, 0, 0.8) 100%)',
                        boxShadow: 'inset 0 1px 3px rgba(139, 43, 226, 0.3), 0 4px 20px rgba(0, 0, 0, 0.5)'
                      }}
+                     // Primary pointer events (supports pen, touch, mouse)
+                     onPointerDown={(e) => handlePointerDown(e, step.id)}
+                     onPointerMove={(e) => handlePointerMove(e, step.id)}
+                     onPointerUp={(e) => handlePointerUp(e, step.id)}
+                     onPointerEnter={() => {
+                       // Add subtle glow effect on hover
+                       const canvas = canvasRefs.current[step.id - 1];
+                       if (canvas) {
+                         canvas.style.boxShadow = 'inset 0 1px 3px rgba(139, 43, 226, 0.5), 0 4px 25px rgba(139, 43, 226, 0.3)';
+                       }
+                     }}
+                     onPointerLeave={() => {
+                       // Reset glow effect and end drawing
+                       const canvas = canvasRefs.current[step.id - 1];
+                       if (canvas) {
+                         canvas.style.boxShadow = 'inset 0 1px 3px rgba(139, 43, 226, 0.3), 0 4px 20px rgba(0, 0, 0, 0.5)';
+                       }
+                       handlePointerUp({ preventDefault: () => {} } as React.PointerEvent, step.id);
+                     }}
+                     // Fallback mouse events for older browsers
                      onMouseDown={(e) => handleMouseDown(e, step.id)}
                      onMouseMove={(e) => handleMouseMove(e, step.id)}
                      onMouseUp={() => handleMouseUp(step.id)}
@@ -1396,7 +1786,7 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
                        }
                        handleMouseUp(step.id);
                      }}
-                     // Touch events for mobile
+                     // Enhanced touch events for mobile (fallback)
                      onTouchStart={(e) => {
                        e.preventDefault();
                        const touch = e.touches[0];
@@ -1422,11 +1812,14 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
                    />
                    </div>
                    
-                   {/* Drawing indicator */}
+
+                   {/* Drawing indicator with input type */}
                    {isDrawing[step.id] && (
                      <div className="absolute top-2 left-2 flex items-center space-x-2 animate-pulse">
                        <div className="w-2 h-2 bg-blue-400 rounded-full animate-ping"></div>
-                       <span className="text-xs text-blue-400 font-medium">Drawing...</span>
+                       <span className="text-xs text-blue-400 font-medium">
+                         Drawing with {currentInputType === 'pen' ? '✏️ Pen' : currentInputType === 'touch' ? '👆 Touch' : '🖱️ Mouse'}...
+                       </span>
                      </div>
                    )}
                    
@@ -1890,6 +2283,89 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
                 </p>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Input Type Selection Modal */}
+      {showInputTypeModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900/95 backdrop-blur-xl border border-purple-500/30 rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl">
+            <div className="text-center mb-6">
+              <div className="w-16 h-16 bg-gradient-to-r from-purple-400 to-blue-400 rounded-full flex items-center justify-center mx-auto mb-4">
+                <span className="text-2xl">✏️</span>
+              </div>
+              <h3 className="text-2xl font-bold text-white mb-2">Choose Your Input Method</h3>
+              <p className="text-gray-300">How would you like to write in this notebook? This includes both the problem and your solutions.</p>
+            </div>
+
+            <div className="space-y-4 mb-6">
+              {/* Mouse Option */}
+              <button
+                onClick={() => handleInputTypeSelect('mouse')}
+                className="w-full p-4 bg-gray-800/50 hover:bg-gray-700/50 border border-gray-600 hover:border-purple-400 rounded-xl transition-all duration-300 group"
+              >
+                <div className="flex items-center space-x-4">
+                  <div className="w-12 h-12 bg-gray-700 group-hover:bg-purple-600 rounded-lg flex items-center justify-center transition-colors">
+                    <span className="text-2xl">🖱️</span>
+                  </div>
+                  <div className="text-left">
+                    <h4 className="text-white font-semibold">Mouse</h4>
+                    <p className="text-gray-400 text-sm">Perfect for desktop computers</p>
+                  </div>
+                </div>
+              </button>
+
+              {/* Touch Option */}
+              <button
+                onClick={() => handleInputTypeSelect('touch')}
+                className="w-full p-4 bg-gray-800/50 hover:bg-gray-700/50 border border-gray-600 hover:border-purple-400 rounded-xl transition-all duration-300 group"
+              >
+                <div className="flex items-center space-x-4">
+                  <div className="w-12 h-12 bg-gray-700 group-hover:bg-purple-600 rounded-lg flex items-center justify-center transition-colors">
+                    <span className="text-2xl">👆</span>
+                  </div>
+                  <div className="text-left">
+                    <h4 className="text-white font-semibold">Touch</h4>
+                    <p className="text-gray-400 text-sm">Great for phones and tablets</p>
+                  </div>
+                </div>
+              </button>
+
+              {/* Pen Option */}
+              <button
+                onClick={() => handleInputTypeSelect('pen')}
+                className="w-full p-4 bg-gray-800/50 hover:bg-gray-700/50 border border-gray-600 hover:border-purple-400 rounded-xl transition-all duration-300 group"
+              >
+                <div className="flex items-center space-x-4">
+                  <div className="w-12 h-12 bg-gray-700 group-hover:bg-purple-600 rounded-lg flex items-center justify-center transition-colors">
+                    <span className="text-2xl">✏️</span>
+                  </div>
+                  <div className="text-left">
+                    <h4 className="text-white font-semibold">Pen/Stylus</h4>
+                    <p className="text-gray-400 text-sm">Best for tablets with stylus support</p>
+                  </div>
+                </div>
+              </button>
+            </div>
+
+            <div className="flex space-x-3">
+              <button
+                onClick={handleSkipInputType}
+                className="flex-1 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg transition-colors"
+              >
+                Auto-detect
+              </button>
+              <button
+                onClick={() => setShowInputTypeModal(false)}
+                className="flex-1 px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors"
+              >
+                Skip for now
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 text-center mt-3">
+              You can change this anytime using the ⚙️ button in the toolbar
+            </p>
           </div>
         </div>
       )}
