@@ -3,6 +3,14 @@ export interface Point {
   y: number;
 }
 
+export interface TimestampedPoint {
+  x: number;
+  y: number;
+  timestamp: number;
+  pressure?: number;
+  pointerType?: string;
+}
+
 export interface Stroke {
   points: Point[];
   timestamp: number;

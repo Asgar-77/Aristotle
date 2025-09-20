@@ -37,7 +37,7 @@ export class AIValidationService {
         messages: [
           {
             role: "system",
-            content: "You are a math tutor that validates mathematical steps. Analyze the given mathematical step and determine if it's correct in the context of the problem. Respond with JSON format only."
+            content: "You are a math tutor that validates mathematical steps. Analyze the given mathematical step and determine if it's correct in the context of the problem. Respond with ONLY valid JSON format. Do not include any text before or after the JSON. The JSON must contain: isCorrect (boolean), feedback (string with emoji), explanation (optional string), confidence (number 0-1)."
           },
           {
             role: "user",
@@ -373,14 +373,39 @@ Be encouraging but mathematically accurate. JSON only:`;
 
   private parseValidationResponse(response: string): StepValidationResult {
     try {
+      // Clean the response first
+      let cleanedResponse = response.trim();
+      
+      // Remove any markdown code blocks
+      cleanedResponse = cleanedResponse.replace(/```json\s*|\s*```/g, '');
+      
       // Try to extract JSON from the response
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      const jsonMatch = cleanedResponse.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
+        let jsonString = jsonMatch[0];
+        
+        // Fix common JSON issues
+        jsonString = jsonString
+          .replace(/\\"/g, '"')  // Fix escaped quotes
+          .replace(/\\n/g, '\\n')  // Fix escaped newlines
+          .replace(/\\t/g, '\\t')  // Fix escaped tabs
+          .replace(/\\r/g, '\\r'); // Fix escaped carriage returns
+        
+        const parsed = JSON.parse(jsonString);
+        
+        // Clean and format the feedback
+        let feedback = parsed.feedback || 'No feedback provided';
+        feedback = this.cleanFeedback(feedback);
+        
+        let explanation = parsed.explanation;
+        if (explanation) {
+          explanation = this.cleanFeedback(explanation);
+        }
+        
         return {
           isCorrect: Boolean(parsed.isCorrect),
-          feedback: parsed.feedback || 'No feedback provided',
-          explanation: parsed.explanation,
+          feedback: feedback,
+          explanation: explanation,
           confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0.5))
         };
       }
@@ -388,16 +413,133 @@ Be encouraging but mathematically accurate. JSON only:`;
       console.error('Failed to parse AI response:', error);
     }
 
-    // Fallback parsing
-    const isCorrect = response.toLowerCase().includes('correct') || 
-                     response.toLowerCase().includes('valid') ||
-                     response.toLowerCase().includes('true');
+    // Fallback parsing - clean the response
+    const cleanedResponse = this.cleanFeedback(response);
+    const isCorrect = cleanedResponse.toLowerCase().includes('correct') || 
+                     cleanedResponse.toLowerCase().includes('valid') ||
+                     cleanedResponse.toLowerCase().includes('true');
     
     return {
       isCorrect,
-      feedback: response.substring(0, 200) + (response.length > 200 ? '...' : ''),
+      feedback: cleanedResponse.substring(0, 200) + (cleanedResponse.length > 200 ? '...' : ''),
       confidence: isCorrect ? 0.8 : 0.3
     };
+  }
+
+  private cleanFeedback(text: string): string {
+    if (!text) return '';
+    
+    // Remove JSON artifacts
+    let cleaned = text
+      .replace(/^[{\[]/, '') // Remove leading { or [
+      .replace(/[}\]]$/, '') // Remove trailing } or ]
+      .replace(/^"|"$/g, '') // Remove surrounding quotes
+      .replace(/\\"/g, '"')  // Fix escaped quotes
+      .replace(/\\n/g, '\n') // Fix escaped newlines
+      .replace(/\\t/g, '\t') // Fix escaped tabs
+      .replace(/\\r/g, '\r') // Fix escaped carriage returns
+      .trim();
+    
+    // Remove common JSON field names and patterns
+    cleaned = cleaned
+      .replace(/^"feedback":\s*"?/i, '')
+      .replace(/^"explanation":\s*"?/i, '')
+      .replace(/^"isCorrect":\s*"?/i, '')
+      .replace(/^"confidence":\s*"?/i, '')
+      .replace(/^"score":\s*"?/i, '')
+      .replace(/^"suggestions":\s*"?/i, '')
+      .replace(/^"feedback"\s*:\s*"?/i, '')
+      .replace(/^"explanation"\s*:\s*"?/i, '')
+      .replace(/^"isCorrect"\s*:\s*"?/i, '')
+      .replace(/^"confidence"\s*:\s*"?/i, '')
+      .replace(/^"score"\s*:\s*"?/i, '')
+      .replace(/^"suggestions"\s*:\s*"?/i, '')
+      .replace(/^score":\s*"?/i, '') // Handle malformed JSON like "score":90
+      .replace(/^feedback":\s*"?/i, '') // Handle malformed JSON like "feedback":"text
+      .replace(/^suggestions":\s*"?/i, '') // Handle malformed JSON like "suggestions":["text
+      .replace(/^isCorrect":\s*"?/i, '') // Handle malformed JSON like "isCorrect":true
+      .replace(/^confidence":\s*"?/i, '') // Handle malformed JSON like "confidence":0.9
+      .replace(/^explanation":\s*"?/i, ''); // Handle malformed JSON like "explanation":"text
+    
+    // Remove trailing commas, quotes, and other JSON artifacts
+    cleaned = cleaned
+      .replace(/",?\s*$/, '')
+      .replace(/",?\s*$/, '')
+      .replace(/^,/, '')
+      .replace(/,$/, '')
+      .replace(/^"|"$/g, '');
+    
+    // Handle specific malformed patterns like "score":90,"feedback":"text
+    if (cleaned.includes('"score":') || cleaned.includes('"feedback":') || cleaned.includes('"suggestions":')) {
+      // Extract just the content after the field name
+      const parts = cleaned.split(/["\s]*[a-zA-Z]+["\s]*:\s*/);
+      if (parts.length > 1) {
+        cleaned = parts[parts.length - 1];
+      }
+    }
+    
+    // Clean up any remaining JSON artifacts
+    cleaned = cleaned
+      .replace(/^[{\[]/, '')
+      .replace(/[}\]]$/, '')
+      .replace(/^"|"$/g, '')
+      .trim();
+    
+    // Ensure it starts with an emoji or proper formatting
+    if (cleaned && !cleaned.match(/^[🎯✅❌👍🤔💡🎉🌟💪✨🔥📚💯]/)) {
+      // Add appropriate emoji based on content
+      if (cleaned.toLowerCase().includes('correct') || cleaned.toLowerCase().includes('good') || cleaned.toLowerCase().includes('excellent') || cleaned.toLowerCase().includes('great')) {
+        cleaned = '✅ ' + cleaned;
+      } else if (cleaned.toLowerCase().includes('wrong') || cleaned.toLowerCase().includes('incorrect') || cleaned.toLowerCase().includes('error')) {
+        cleaned = '❌ ' + cleaned;
+      } else if (cleaned.toLowerCase().includes('hint') || cleaned.toLowerCase().includes('try') || cleaned.toLowerCase().includes('remember')) {
+        cleaned = '💡 ' + cleaned;
+      } else {
+        cleaned = '📝 ' + cleaned;
+      }
+    }
+    
+    return cleaned.trim();
+  }
+
+  private cleanSuggestion(text: string): string {
+    if (!text) return '';
+    
+    // Remove bullet points and formatting artifacts
+    let cleaned = text
+      .replace(/^[•\-\*]\s*/, '') // Remove bullet points
+      .replace(/^📝\s*/, '') // Remove emoji prefixes
+      .replace(/^e\.g\.\s*/, '') // Remove "e.g." prefixes
+      .replace(/^Thus\s*/, '') // Remove "Thus" prefixes
+      .replace(/^\(x = \d+\)\.?\s*/, '') // Remove solution examples
+      .replace(/^Verify\s*/, '') // Remove "Verify" prefixes
+      .replace(/^Include\s*/, '') // Remove "Include" prefixes
+      .replace(/^Add\s*/, '') // Remove "Add" prefixes
+      .trim();
+    
+    // Remove LaTeX formatting
+    cleaned = cleaned
+      .replace(/\\\(/g, '')
+      .replace(/\\\)/g, '')
+      .replace(/\\[a-zA-Z]+\{[^}]*\}/g, '')
+      .replace(/\{[^}]*\}/g, '')
+      .replace(/\\/g, '')
+      .trim();
+    
+    // Add appropriate emoji based on content
+    if (cleaned.toLowerCase().includes('verify') || cleaned.toLowerCase().includes('check') || cleaned.toLowerCase().includes('substitute')) {
+      cleaned = '🔍 ' + cleaned;
+    } else if (cleaned.toLowerCase().includes('add') || cleaned.toLowerCase().includes('include') || cleaned.toLowerCase().includes('step')) {
+      cleaned = '📝 ' + cleaned;
+    } else if (cleaned.toLowerCase().includes('explain') || cleaned.toLowerCase().includes('understanding') || cleaned.toLowerCase().includes('reinforce')) {
+      cleaned = '📚 ' + cleaned;
+    } else if (cleaned.toLowerCase().includes('practice') || cleaned.toLowerCase().includes('review') || cleaned.toLowerCase().includes('focus')) {
+      cleaned = '🎯 ' + cleaned;
+    } else {
+      cleaned = '💡 ' + cleaned;
+    }
+    
+    return cleaned.trim();
   }
 
   async getStepHint(latex: string, context?: string): Promise<string> {
@@ -410,7 +552,7 @@ Be encouraging but mathematically accurate. JSON only:`;
         messages: [
           {
             role: "system",
-            content: "You are a helpful math tutor. Provide encouraging hints to help students learn from their mistakes."
+            content: "You are a helpful math tutor. Provide encouraging hints to help students learn from their mistakes. Start your response with an appropriate emoji (💡, 🤔, or 🎯) and keep the hint brief and encouraging."
           },
           {
             role: "user",
@@ -422,7 +564,8 @@ Be encouraging but mathematically accurate. JSON only:`;
         max_completion_tokens: 200
       });
 
-      return chatCompletion.choices[0]?.message?.content || 'Try to review the algebraic rules and try again.';
+      const hint = chatCompletion.choices[0]?.message?.content || 'Try to review the algebraic rules and try again.';
+      return this.cleanFeedback(hint);
     } catch (error) {
       console.error('AI hint error:', error);
       return 'Try to review the algebraic rules and try again.';
@@ -466,7 +609,7 @@ Respond with a JSON object containing:
         messages: [
           {
             role: "system",
-            content: "You are an expert math tutor evaluating a student's complete solution. Be encouraging but thorough in your assessment. Respond with JSON format only."
+            content: "You are an expert math tutor evaluating a student's complete solution. Be encouraging but thorough in your assessment. Respond with ONLY valid JSON format. Do not include any text before or after the JSON. The JSON must contain: score (number 0-100), feedback (string with emoji), suggestions (array of strings with emojis)."
           },
           {
             role: "user",
@@ -560,6 +703,29 @@ Respond with a JSON object containing:
       // Remove any markdown code blocks
       cleanedResponse = cleanedResponse.replace(/```json\s*|\s*```/g, '');
       
+      // Handle malformed JSON like "score":90,"feedback":"text
+      const malformedMatch = cleanedResponse.match(/["\s]*score["\s]*:\s*(\d+),["\s]*feedback["\s]*:\s*"([^"]+)",["\s]*suggestions["\s]*:\s*\[([^\]]*)\]/);
+      if (malformedMatch) {
+        const [, scoreStr, feedbackStr, suggestionsStr] = malformedMatch;
+        const score = Math.max(0, Math.min(100, Number(scoreStr) || 0));
+        const feedback = this.cleanFeedback(feedbackStr);
+        
+        // Parse suggestions array
+        let suggestions: string[] = [];
+        if (suggestionsStr.trim()) {
+          suggestions = suggestionsStr
+            .split(',')
+            .map(s => this.cleanSuggestion(s.trim().replace(/^"|"$/g, '')))
+            .filter(s => s.trim().length > 0);
+        }
+        
+        if (suggestions.length === 0) {
+          suggestions = this.generateDefaultSuggestions(score);
+        }
+        
+        return { score, feedback, suggestions };
+      }
+      
       // Find JSON object in the response
       const jsonMatch = cleanedResponse.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
@@ -573,10 +739,31 @@ Respond with a JSON object containing:
           .replace(/\\r/g, '\\r'); // Fix escaped carriage returns
         
         const parsed = JSON.parse(jsonString);
+        
+        // Clean and format feedback
+        let feedback = parsed.feedback || 'No feedback provided.';
+        feedback = this.cleanFeedback(feedback);
+        
+        // Clean and format suggestions
+        let suggestions: string[] = [];
+        if (Array.isArray(parsed.suggestions)) {
+          suggestions = parsed.suggestions.map((suggestion: any) => {
+            if (typeof suggestion === 'string') {
+              return this.cleanSuggestion(suggestion);
+            }
+            return this.cleanSuggestion(String(suggestion));
+          }).filter(s => s.trim().length > 0);
+        }
+        
+        // Ensure we have at least one suggestion
+        if (suggestions.length === 0) {
+          suggestions = this.generateDefaultSuggestions(parsed.score || 0);
+        }
+        
         return {
           score: Math.max(0, Math.min(100, Number(parsed.score) || 0)),
-          feedback: parsed.feedback || 'No feedback provided.',
-          suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions : []
+          feedback: feedback,
+          suggestions: suggestions
         };
       }
     } catch (error) {
@@ -589,9 +776,37 @@ Respond with a JSON object containing:
 
     return {
       score: Math.max(0, Math.min(100, score)),
-      feedback: response.substring(0, 500) + (response.length > 500 ? '...' : ''),
-      suggestions: ['Review your work and try again.']
+      feedback: this.cleanFeedback(response.substring(0, 500)) + (response.length > 500 ? '...' : ''),
+      suggestions: this.generateDefaultSuggestions(score)
     };
+  }
+
+  private generateDefaultSuggestions(score: number): string[] {
+    if (score >= 90) {
+      return [
+        '🎯 Try more complex problems to challenge yourself',
+        '🌟 Consider exploring advanced topics like quadratic equations',
+        '💪 Keep up the excellent work!'
+      ];
+    } else if (score >= 70) {
+      return [
+        '📚 Review the steps you missed and understand the correct approach',
+        '🎯 Practice similar problems to strengthen your skills',
+        '💡 Focus on the areas that need improvement'
+      ];
+    } else if (score >= 50) {
+      return [
+        '📖 Focus on understanding the fundamental algebraic rules',
+        '🔍 Break down complex problems into smaller, manageable steps',
+        '🧮 Double-check your arithmetic calculations'
+      ];
+    } else {
+      return [
+        '📚 Review basic algebraic operations and rules',
+        '🎯 Start with simpler problems and gradually increase difficulty',
+        '💪 Don\'t hesitate to ask for help when you need it'
+      ];
+    }
   }
 }
 
