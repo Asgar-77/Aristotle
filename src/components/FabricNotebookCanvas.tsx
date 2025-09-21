@@ -599,7 +599,7 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
       setSelectedInputType(inputType);
     }
 
-    // Prevent default to avoid scrolling
+    // Prevent default to avoid scrolling and other browser behaviors
     e.preventDefault();
     
     setIsDrawingProblem(true);
@@ -627,14 +627,14 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
       y: (e.clientY - rect.top) * scaleY,
       timestamp: Date.now(),
       pressure: pressure,
-      pointerType: e.pointerType
+      pointerType: e.pointerType // 'pen', 'touch', 'mouse'
     };
     
     // Set current input type for visual feedback
     setCurrentInputType(e.pointerType as 'mouse' | 'touch' | 'pen');
     
     setProblemCurrentStrokes([point]);
-  }, []);
+  }, [selectedInputType]);
 
   // Fallback problem mouse handler
   const handleProblemMouseDown = useCallback((e: React.MouseEvent) => {
@@ -649,7 +649,7 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
     setIsDrawingProblem(true);
     const point = getCanvasCoordinates(e.nativeEvent, canvas);
     setProblemCurrentStrokes([point]);
-  }, [getCanvasCoordinates]);
+  }, [selectedInputType, getCanvasCoordinates]);
 
   const handleProblemPointerMove = useCallback((e: React.PointerEvent) => {
     if (!isDrawingProblem) return;
@@ -803,9 +803,25 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
     const canvas = problemCanvasRef.current;
     if (!canvas) return;
 
-    // Set larger canvas size for better writing experience
+    // Set canvas size for problem writing
     canvas.width = 800;
     canvas.height = 200;
+    
+    // Get context and configure for optimal pen input (same as step canvases)
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+    }
+    
+    // Set up canvas for better pen detection
+    canvas.style.touchAction = 'none';
+    canvas.style.userSelect = 'none';
+    canvas.style.webkitUserSelect = 'none';
+    canvas.style.webkitTouchCallout = 'none';
+    
     redrawProblemCanvas();
   }, [redrawProblemCanvas]);
 
@@ -2276,12 +2292,6 @@ export const FabricNotebookCanvas: React.FC<FabricNotebookCanvasProps> = ({
                 </div>
               </div>
               
-              {/* Developer Credit */}
-              <div className="pt-4 border-t border-gray-600/30">
-                <p className="text-xs text-gray-500 text-center">
-                  Developed by <span className="text-purple-400 font-medium">AI Engineer Shaik Asgar</span>
-                </p>
-              </div>
             </div>
           </div>
         </div>

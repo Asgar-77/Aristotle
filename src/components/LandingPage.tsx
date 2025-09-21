@@ -514,16 +514,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStartPracticing }) =
             <div className="absolute inset-0 bg-gradient-to-r from-purple-400 via-blue-400 to-green-400 rounded-2xl sm:rounded-3xl opacity-0 group-hover:opacity-20 transition-opacity duration-500" />
           </button>
           
-              <p className="mt-6 sm:mt-8 text-sm sm:text-base text-gray-400 px-4 sm:px-0">
-                No account required • Works on all devices • Free to use
-              </p>
 
-              {/* Developer Credit */}
-              <div className="mt-8 pt-6 border-t border-gray-700/30">
-                <p className="text-xs sm:text-sm text-gray-500 hover:text-gray-400 transition-colors duration-300">
-                  Developed by <span className="text-purple-400 font-medium">AI Engineer Shaik Asgar</span>
-                </p>
-              </div>
         </div>
       </div>
     </div>
